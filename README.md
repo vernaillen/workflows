@@ -44,8 +44,8 @@ that command. What it does is the repository's business:
 // radio.vernaillen.dev
 "check": "nuxt prepare && pnpm run lint && pnpm run typecheck && pnpm run build"
 
-// vernaillen.astro — `astro check` is the typecheck
-"check": "pnpm lint && pnpm typecheck && pnpm build"
+// vernaillen.astro — Playwright's webServer serves dist/, so build comes first
+"check": "pnpm lint && pnpm typecheck && pnpm build && pnpm test:e2e"
 ```
 
 This is the decision that makes the CI file genuinely uniform. The alternative
@@ -180,8 +180,9 @@ different dependency tree than the one that was committed.
 Buildx (docker-container driver, required for the GHA layer cache), one build
 with `load: true`, then — before anything is pushed — the image is started and
 polled until it answers `GET <smoke-path>` on `<smoke-port>`. That port is
-the one *inside* the image; it is published on a fixed high host port, so an
-image listening on 80 needs no privileged bind. Container logs
+the one *inside* the image; it is published on a fixed host port below the
+ephemeral range, so a privileged container port needs no special handling.
+Container logs
 are always grouped into the run log, and the wait aborts the moment the
 container stops, so a crash loop fails in seconds instead of burning the whole
 timeout.

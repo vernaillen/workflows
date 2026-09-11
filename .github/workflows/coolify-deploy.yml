@@ -244,7 +244,9 @@ jobs:
         env:
           IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
           PORT: ${{ inputs.smoke-port }}
-          HOST_PORT: 39080
+          # Below the ephemeral range (32768-60999), so an outbound connection
+          # on the runner can never already hold it.
+          HOST_PORT: 18080
           TARGET_PATH: ${{ inputs.smoke-path }}
           TIMEOUT: ${{ inputs.smoke-timeout }}
           SMOKE_ENV: ${{ secrets.SMOKE_ENV }}
@@ -252,9 +254,9 @@ jobs:
           # An empty env file is valid, so this needs no branch.
           printf '%s\n' "${SMOKE_ENV}" > "${RUNNER_TEMP}/smoke.env"
           # smoke-port is the port *inside* the image. It is published on a
-          # fixed high host port rather than on itself, so a caller whose
-          # container listens on 80 needs no privileged bind and no caller can
-          # collide with something the runner image already has open.
+          # fixed host port rather than on itself, so a container port that is
+          # privileged, or that the runner image already has open, needs no
+          # special handling from the caller.
           docker run -d --name smoke \
             --env-file "${RUNNER_TEMP}/smoke.env" \
             -p "127.0.0.1:${HOST_PORT}:${PORT}" \
