@@ -244,15 +244,20 @@ jobs:
         env:
           IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
           PORT: ${{ inputs.smoke-port }}
+          HOST_PORT: 39080
           TARGET_PATH: ${{ inputs.smoke-path }}
           TIMEOUT: ${{ inputs.smoke-timeout }}
           SMOKE_ENV: ${{ secrets.SMOKE_ENV }}
         run: |
           # An empty env file is valid, so this needs no branch.
           printf '%s\n' "${SMOKE_ENV}" > "${RUNNER_TEMP}/smoke.env"
+          # smoke-port is the port *inside* the image. It is published on a
+          # fixed high host port rather than on itself, so a caller whose
+          # container listens on 80 needs no privileged bind and no caller can
+          # collide with something the runner image already has open.
           docker run -d --name smoke \
             --env-file "${RUNNER_TEMP}/smoke.env" \
-            -p "127.0.0.1:${PORT}:${PORT}" \
+            -p "127.0.0.1:${HOST_PORT}:${PORT}" \
             "${IMAGE_REF}"
 
           ok=0
@@ -260,7 +265,7 @@ jobs:
             # -L: a locale or canonical redirect is normal on `/`, and following
             # it means the probe renders a real page instead of being satisfied
             # by a 302. --max-redirs stops a redirect loop looking healthy.
-            if curl -fsS -L --max-redirs 3 -o /dev/null "http://127.0.0.1:${PORT}${TARGET_PATH}"; then
+            if curl -fsS -L --max-redirs 3 -o /dev/null "http://127.0.0.1:${HOST_PORT}${TARGET_PATH}"; then
               ok=1
               break
             fi
