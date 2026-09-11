@@ -1,0 +1,345 @@
+name: coolify-deploy
+
+# Shared CI/CD pipeline for every vernaillen app that ships as a Docker image to
+# the self-hosted registry on the Coolify server.
+#
+#   check ──▶ build ──▶ deploy
+#
+# check   Installs with a frozen lockfile and runs one command, `pnpm run check`
+#         by default. What that command does is each repository's business:
+#         lint, typecheck, unit tests, a production build, browser tests. Keeping
+#         the variation in package.json instead of in workflow inputs is what
+#         lets every repository share this file unchanged.
+#
+# build   Builds the image, loads it into the runner's Docker daemon, boots it
+#         and waits for it to answer an HTTP request. Nothing is pushed until
+#         that succeeds, so an image that cannot start never reaches the
+#         registry. Runs on every branch, so a broken Dockerfile is caught
+#         before it is merged; only the push is gated on `deploy-branch`.
+#
+# deploy  Asks Coolify to pull :latest and restart. Skipped when the Coolify
+#         inputs are absent, so a repository can adopt this pipeline before its
+#         Coolify application exists.
+#
+# Every action is pinned to a commit SHA; Renovate keeps them current in this
+# repository alone, and the callers inherit that for free.
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: Image name inside the registry, without host or tag (e.g. harmonics-be).
+        type: string
+        required: true
+      registry:
+        description: Container registry host.
+        type: string
+        default: registry.apps.vernaillen.dev
+      node-version:
+        description: Node major version used by the check job. The image uses whatever its Dockerfile pins.
+        type: string
+        default: '26'
+      check-command:
+        description: >-
+          The single command that decides whether this commit is good. Override
+          only while a repository is being brought up to the `pnpm run check`
+          convention -- a permanent override here is drift in disguise.
+        type: string
+        default: pnpm run check
+      playwright-browsers:
+        description: >-
+          Space-separated Playwright browsers to install (and cache) before the
+          check command runs, e.g. "chromium". Empty skips the install entirely.
+        type: string
+        default: ''
+      runs-on:
+        description: Runner label for all three jobs.
+        type: string
+        default: ubuntu-latest
+      context:
+        description: Docker build context.
+        type: string
+        default: .
+      dockerfile:
+        description: >-
+          Path to the Dockerfile, relative to the repository root -- not to
+          `context`. Set both when the app is not at the root.
+        type: string
+        default: Dockerfile
+      build-args:
+        description: >-
+          Newline-separated KEY=VALUE build arguments. Public values only --
+          build args are readable in the image history. Use the BUILD_SECRETS
+          secret for anything private.
+        type: string
+        default: ''
+      smoke-test:
+        description: >-
+          Boot the built image and wait for it to answer before pushing. The
+          image is loaded locally either way; this only controls the boot check.
+        type: boolean
+        default: true
+      smoke-port:
+        description: Port the container listens on.
+        type: number
+        default: 3000
+      smoke-path:
+        description: Path requested on the booted container.
+        type: string
+        default: /
+      smoke-timeout:
+        description: Seconds to wait for the container to answer.
+        type: number
+        default: 60
+      coolify-url:
+        description: >-
+          Coolify instance URL, no trailing slash. Deliberately has no default:
+          this repository is public and the control plane URL is not. Empty
+          skips the deploy job.
+        type: string
+        default: ''
+      coolify-app-uuid:
+        description: UUID of the Coolify application running this image. Empty skips the deploy job.
+        type: string
+        default: ''
+      deploy-branch:
+        description: Branch whose green builds are pushed to the registry and deployed.
+        type: string
+        default: main
+    secrets:
+      REGISTRY_USERNAME:
+        description: htpasswd user of the registry service on Coolify.
+        required: false
+      REGISTRY_PASSWORD:
+        description: htpasswd password of the registry service on Coolify.
+        required: false
+      COOLIFY_TOKEN:
+        description: Coolify API token with deploy permission. Required only when the Coolify inputs are set.
+        required: false
+      BUILD_SECRETS:
+        description: >-
+          Newline-separated id=value pairs mounted into the build with
+          --mount=type=secret,id=<id>. Never stored in a layer.
+        required: false
+      SMOKE_ENV:
+        description: Newline-separated KEY=VALUE passed to the smoke-test container as an env file.
+        required: false
+    outputs:
+      image:
+        description: Fully qualified image name, without a tag.
+        value: ${{ jobs.build.outputs.image }}
+      tag:
+        description: Immutable tag that was built (the commit SHA).
+        value: ${{ jobs.build.outputs.tag }}
+      pushed:
+        description: '"true" when the image reached the registry.'
+        value: ${{ jobs.build.outputs.pushed }}
+
+jobs:
+  check:
+    name: check
+    runs-on: ${{ inputs.runs-on }}
+    # Generous, but finite: a hung install or a test waiting on a port that never
+    # opens would otherwise hold a runner for six hours.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No `version`: action-setup reads packageManager from package.json, which
+      # is the only place a pnpm version should be pinned.
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      # --frozen-lockfile: CI must never silently resolve a different tree than
+      # the one that was committed. If this fails, the lockfile needs committing.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        if: inputs.playwright-browsers != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ inputs.playwright-browsers }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+
+      # --with-deps is cheap on a cache hit: the browsers are already there and
+      # only the apt dependencies are re-checked.
+      - name: Install Playwright browsers
+        if: inputs.playwright-browsers != ''
+        env:
+          BROWSERS: ${{ inputs.playwright-browsers }}
+        run: pnpm exec playwright install --with-deps ${BROWSERS}
+
+      # eval, not bare expansion: the command is allowed to be a `&&` chain, and
+      # keeping it in the environment stops a quote in it from corrupting the
+      # generated script.
+      - name: Check
+        env:
+          CHECK_COMMAND: ${{ inputs.check-command }}
+        run: eval "${CHECK_COMMAND}"
+
+      - name: Upload Playwright report
+        if: failure() && inputs.playwright-browsers != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  build:
+    name: build
+    needs: check
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # One place decides whether this run is allowed to publish anything.
+      DEPLOY: ${{ github.ref == format('refs/heads/{0}', inputs.deploy-branch) }}
+      IMAGE: ${{ inputs.registry }}/${{ inputs.image-name }}
+    outputs:
+      # Re-stated rather than reusing env.IMAGE: the `env` context is not
+      # available to job outputs.
+      image: ${{ inputs.registry }}/${{ inputs.image-name }}
+      tag: ${{ github.sha }}
+      pushed: ${{ steps.push.outputs.pushed || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # docker-container driver: required for the GitHub Actions layer cache.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # load: true keeps the image in the local daemon so it can be booted before
+      # anyone else can pull it. The push is a separate step further down.
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          push: false
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: ${{ inputs.build-args }}
+          secrets: ${{ secrets.BUILD_SECRETS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        if: inputs.smoke-test
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
+          PORT: ${{ inputs.smoke-port }}
+          TARGET_PATH: ${{ inputs.smoke-path }}
+          TIMEOUT: ${{ inputs.smoke-timeout }}
+          SMOKE_ENV: ${{ secrets.SMOKE_ENV }}
+        run: |
+          # An empty env file is valid, so this needs no branch.
+          printf '%s\n' "${SMOKE_ENV}" > "${RUNNER_TEMP}/smoke.env"
+          docker run -d --name smoke \
+            --env-file "${RUNNER_TEMP}/smoke.env" \
+            -p "127.0.0.1:${PORT}:${PORT}" \
+            "${IMAGE_REF}"
+
+          ok=0
+          for _ in $(seq 1 "${TIMEOUT}"); do
+            # -L: a locale or canonical redirect is normal on `/`, and following
+            # it means the probe renders a real page instead of being satisfied
+            # by a 302. --max-redirs stops a redirect loop looking healthy.
+            if curl -fsS -L --max-redirs 3 -o /dev/null "http://127.0.0.1:${PORT}${TARGET_PATH}"; then
+              ok=1
+              break
+            fi
+            # Stop waiting the moment the container is gone -- a crash loop would
+            # otherwise burn the whole timeout.
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke 2>/dev/null)" != "true" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "::group::container logs"
+          docker logs smoke 2>&1 || true
+          echo "::endgroup::"
+          docker rm -f smoke >/dev/null 2>&1 || true
+          rm -f "${RUNNER_TEMP}/smoke.env"
+
+          if [ "${ok}" != 1 ]; then
+            echo "::error::Image did not answer GET ${TARGET_PATH} on :${PORT} within ${TIMEOUT}s"
+            exit 1
+          fi
+          echo "Image answered GET ${TARGET_PATH} on :${PORT}"
+
+      - name: Log in to the registry
+        if: env.DEPLOY == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # The immutable tag goes first: :latest only moves once the layers are
+      # known to be in the registry, so Coolify can never pull a half-push.
+      - name: Push image
+        id: push
+        if: env.DEPLOY == 'true'
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
+          echo "pushed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Summary
+        if: always()
+        env:
+          SMOKE: ${{ inputs.smoke-test }}
+          PUSHED: ${{ steps.push.outputs.pushed || 'false' }}
+          COOLIFY_APP_UUID: ${{ inputs.coolify-app-uuid }}
+        run: |
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| image | \`${IMAGE}\` |"
+            echo "| tag | \`${GITHUB_SHA}\` |"
+            echo "| smoke test | ${SMOKE} |"
+            echo "| pushed | ${PUSHED} |"
+            echo "| coolify app | ${COOLIFY_APP_UUID:-not configured} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  deploy:
+    name: deploy
+    needs: build
+    if: needs.build.outputs.pushed == 'true' && inputs.coolify-url != '' && inputs.coolify-app-uuid != ''
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # Coolify pulls :latest but will not notice it moved -- force=true makes it
+      # re-pull and restart. The endpoint is POST-only; GET answers 405.
+      - name: Ask Coolify to redeploy
+        env:
+          COOLIFY_URL: ${{ inputs.coolify-url }}
+          COOLIFY_APP_UUID: ${{ inputs.coolify-app-uuid }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "${COOLIFY_TOKEN}" ]; then
+            echo "::error::coolify-url and coolify-app-uuid are set but COOLIFY_TOKEN is empty"
+            exit 1
+          fi
+          curl --fail-with-body -sS -X POST \
+            "${COOLIFY_URL%/}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=true" \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
+          echo

@@ -1,0 +1,33 @@
+name: self-test
+
+# This repository has no application of its own but several dependants, so a
+# typo in coolify-deploy.yml would break all of them at once. The two-file
+# fixture under test/ exercises the whole pipeline -- install, check, docker
+# build with a build argument and a mounted build secret, local load, boot, HTTP
+# probe -- and needs no credentials: `deploy-branch` names a branch that cannot
+# exist, so the login, push and deploy steps are never reached.
+#
+# `uses: ./` resolves to this same commit, so what is tested is exactly what
+# would be released.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/coolify-deploy.yml
+    with:
+      image-name: workflows-self-test
+      context: test/fixture
+      dockerfile: test/fixture/Dockerfile
+      build-args: SELF_TEST_ARG=run-${{ github.run_id }}
+      smoke-port: 3000
+      smoke-path: /healthz
+      smoke-timeout: 30
+      deploy-branch: this-branch-must-never-exist

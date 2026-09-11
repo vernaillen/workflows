@@ -1,0 +1,57 @@
+# Annotated template for .github/workflows/ci.yml in an application repository.
+# Copy it, set `image-name`, delete the inputs you do not need, and that is the
+# whole pipeline: check, build, smoke test, push, redeploy.
+#
+# Prerequisites in the application repository:
+#   * `pnpm run check` in package.json -- whatever "this commit is good" means
+#     there. The pipeline runs that one command and nothing else.
+#   * `packageManager` in package.json -- the only place the pnpm version is
+#     pinned; the workflow reads it rather than pinning its own.
+#   * a Dockerfile that serves on a known port.
+#   * secrets and variables set by scripts/configure-repo.sh.
+
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded feature-branch runs are pointless; a main-branch run is the one
+  # that pushes the image and redeploys, so it must always be allowed to finish.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  pipeline:
+    # @v1 is a moving tag: fixes and action bumps arrive on the next run with no
+    # PR here. Pin a SHA instead to freeze this repository on one version.
+    uses: vernaillen/workflows/.github/workflows/coolify-deploy.yml@v1
+    with:
+      image-name: my-app
+
+      # The port the container listens on, and a path that answers 200 as soon
+      # as the app is up. The image is booted and probed before it is pushed, so
+      # these two want to be right -- a wrong port fails every build.
+      smoke-port: 3000
+      smoke-path: /
+
+      # Coolify's URL lives in a repository variable rather than in this public
+      # workflow. Leave both out and the deploy job simply does not run, which
+      # is what you want before the Coolify application exists.
+      coolify-url: ${{ vars.COOLIFY_URL }}
+      coolify-app-uuid: ${{ vars.COOLIFY_APP_UUID }}
+
+      # Public values only: build args are readable in the image history.
+      # Anything private goes through the BUILD_SECRETS secret instead, which is
+      # mounted with --mount=type=secret and never lands in a layer.
+      # build-args: |
+      #   PUBLIC_API_URL=${{ vars.PUBLIC_API_URL }}
+
+      # Installs and caches browsers before the check command runs. Only needed
+      # if `pnpm run check` ends in Playwright.
+      # playwright-browsers: chromium
+
+    # `inherit` hands over every secret this repository has. Name them one by
+    # one instead if the repository holds secrets this pipeline should not see.
+    secrets: inherit
