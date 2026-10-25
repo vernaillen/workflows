@@ -118,7 +118,7 @@ resolve() {
 # COOLIFY_DEPLOY_URL (root + /api/v1/deploy?uuid=...), so fall back to its origin.
 coolify_url() {
   local v
-  if v=$(resolve COOLIFY_URL 2>/dev/null); then printf '%s' "${v%/}"; return 0; fi
+  if v=$(resolve COOLIFY_URL </dev/null 2>/dev/null); then printf '%s' "${v%/}"; return 0; fi
   if v=$(env_get "$COOLIFY_ENV" COOLIFY_DEPLOY_URL || env_get "$PROJECT_ENV" COOLIFY_DEPLOY_URL); then
     v=$(printf '%s' "$v" | sed -E 's#^(https?://[^/]+).*#\1#')
     case $v in http*://?*) printf '%s' "$v"; return 0 ;; esac
