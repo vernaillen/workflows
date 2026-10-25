@@ -124,6 +124,12 @@ on:
       SMOKE_ENV:
         description: Newline-separated KEY=VALUE passed to the smoke-test container as an env file.
         required: false
+      GITHUB_PACKAGES_TOKEN:
+        description: >-
+          Classic PAT with read:packages, for installing private @vernaillen/*
+          packages from GitHub Packages. The Docker build needs it too, as
+          github_packages_token in BUILD_SECRETS.
+        required: false
     outputs:
       image:
         description: Fully qualified image name, without a tag.
@@ -161,8 +167,13 @@ jobs:
 
       # --frozen-lockfile: CI must never silently resolve a different tree than
       # the one that was committed. If this fails, the lockfile needs committing.
+      # The token is passed as config, not via .npmrc: pnpm does not expand
+      # environment variables in a repository's registry credentials. Empty
+      # when the caller has no private packages, which pnpm ignores.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_PACKAGES_TOKEN }}
+        run: env "npm_config_//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}" pnpm install --frozen-lockfile
 
       - name: Cache Playwright browsers
         if: inputs.playwright-browsers != ''

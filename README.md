@@ -152,6 +152,7 @@ credentials at all.
 | `COOLIFY_TOKEN` | the deploy job; the job fails loudly if the Coolify inputs are set and this is empty |
 | `BUILD_SECRETS` | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
 | `SMOKE_ENV` | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
+| `GITHUB_PACKAGES_TOKEN` | the check job's install, for private `@vernaillen/*` packages on GitHub Packages; the image build needs it as `github_packages_token` in `BUILD_SECRETS` |
 
 ### Outputs
 
