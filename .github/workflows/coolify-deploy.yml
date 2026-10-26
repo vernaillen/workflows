@@ -167,13 +167,18 @@ jobs:
 
       # --frozen-lockfile: CI must never silently resolve a different tree than
       # the one that was committed. If this fails, the lockfile needs committing.
-      # The token is passed as config, not via .npmrc: pnpm does not expand
-      # environment variables in a repository's registry credentials. Empty
-      # when the caller has no private packages, which pnpm ignores.
+      # The token goes in the runner's user-level ~/.npmrc: pnpm ignores
+      # credentials in a repository's .npmrc, and on the runner it did not pick
+      # up an npm_config_ environment variable either. Skipped when the caller
+      # has no private packages.
       - name: Install dependencies
         env:
           PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
-        run: env "npm_config_//npm.pkg.github.com/:_authToken=${PACKAGES_TOKEN}" pnpm install --frozen-lockfile
+        run: |
+          if [ -n "${PACKAGES_TOKEN}" ]; then
+            echo "//npm.pkg.github.com/:_authToken=${PACKAGES_TOKEN}" >> ~/.npmrc
+          fi
+          pnpm install --frozen-lockfile
 
       - name: Cache Playwright browsers
         if: inputs.playwright-browsers != ''
