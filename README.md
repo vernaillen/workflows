@@ -89,10 +89,13 @@ pipeline has no business seeing:
 
 ```yaml
     secrets:
-      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      BUILD_SECRETS: ${{ secrets.BUILD_SECRETS }}
 ```
+
+The registry and Coolify credentials are not in that list on purpose: they live
+in the caller's `production` environment, which only the default branch may
+use, and the jobs that push and deploy read them from there (see
+[Secrets](#secrets)).
 
 See [`examples/caller.yml`](examples/caller.yml) for an annotated version, and
 the three live callers: `harmonics.be`, `vernaillen.astro`,
@@ -145,14 +148,24 @@ already public in `radio.vernaillen.dev`.
 All optional, so the self-test can exercise the whole pipeline with no
 credentials at all.
 
-| Secret | Needed for |
-|---|---|
-| `REGISTRY_USERNAME` | the push (`deploy-branch` runs only) |
-| `REGISTRY_PASSWORD` | the push |
-| `COOLIFY_TOKEN` | the deploy job; the job fails loudly if the Coolify inputs are set and this is empty |
-| `BUILD_SECRETS` | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
-| `SMOKE_ENV` | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
-| `PACKAGES_TOKEN` | the check job's install, for private `@vernaillen/*` packages on GitHub Packages; the image build needs it as `github_packages_token` in `BUILD_SECRETS` |
+| Secret | Where | Needed for |
+|---|---|---|
+| `REGISTRY_USERNAME` | `production` environment | the push (`deploy-branch` runs only) |
+| `REGISTRY_PASSWORD` | `production` environment | the push |
+| `COOLIFY_TOKEN` | `production` environment | the deploy job; the job fails loudly if the Coolify inputs are set and this is empty |
+| `BUILD_SECRETS` | repository | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
+| `SMOKE_ENV` | repository | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
+| `PACKAGES_TOKEN` | repository | the check job's install, for private `@vernaillen/*` packages on GitHub Packages; the image build needs it as `github_packages_token` in `BUILD_SECRETS` |
+
+**Why an environment.** A caller runs on every push to every branch, and a
+branch runs its own copy of the caller workflow. With the deploy credentials as
+repository secrets, anyone who can push a branch can edit that copy and send
+them anywhere, then push an image and redeploy without going near `main`. A job
+that declares an environment reads that environment's secrets, and the
+`production` environment only accepts the default branch. So `build` declares
+it only when the run is on `deploy-branch` (other branches get no environment),
+and `deploy` always declares it. Keep `deploy-branch` equal to the default
+branch, or the environment refuses the run.
 
 ### Outputs
 
@@ -218,6 +231,16 @@ an interactive prompt; discovers the Coolify application UUID by name via the
 Coolify API; and pipes every value to `gh` over stdin, so no secret ever
 appears in the process list, the shell history or the output. It is idempotent
 — re-run it whenever a credential rotates.
+
+It also creates the `production` environment (or tightens an existing one, such
+as the unrestricted `Production` a Vercel integration leaves behind), limits it
+to the default branch, stores the registry and Coolify credentials there and
+deletes their repository-level copies. All of that needs admin rights on the
+repository; when the `gh` login has none, pass a short-lived admin token:
+
+```bash
+GH_TOKEN=... ./scripts/configure-repo.sh --repo vernaillen/my-app
+```
 
 ## Maintaining this repository
 
