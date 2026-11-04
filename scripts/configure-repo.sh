@@ -3,6 +3,16 @@
 # Set the GitHub Actions secrets and variables that coolify-deploy.yml needs on
 # a repository that calls it.
 #
+# The registry and Coolify credentials go into a `production` environment that
+# only the default branch may use, and their repository-level copies are
+# deleted. A repository secret reaches every branch, and a branch runs its own
+# copy of the caller workflow, so anyone who can push a branch could otherwise
+# read them. The rest (BUILD_SECRETS, SMOKE_ENV, extras) stay repository secrets.
+#
+# Managing secrets and environments needs admin rights on the repository. When
+# the gh login has none, run it with a short-lived admin token:
+#   GH_TOKEN=... scripts/configure-repo.sh --repo vernaillen/my-app
+#
 # `vernaillen` is a personal account, not an organisation, so GitHub offers no
 # org-level Actions secrets -- every repository carries its own copy. This
 # script is what keeps those copies identical, and it is idempotent: re-run it
@@ -43,6 +53,7 @@
 set -euo pipefail
 
 COOLIFY_ENV=${COOLIFY_ENV:-$HOME/git/vernaillen/anneleenvernaillen.com/.env}
+ENVIRONMENT=production
 PROJECT_ENV=${PROJECT_ENV:-$PWD/.env}
 
 REPO=${REPO:-}
@@ -156,18 +167,52 @@ discover_app_uuid() {
 
 failed=0
 
+# set_secret <name> <value> [<environment>]
 set_secret() {
-  local name=$1 value=${2:-}
+  local name=$1 value=${2:-} env=${3:-}
   if [ -z "$value" ]; then
     echo "  ! $name: no value found, skipped" >&2
     failed=$((failed + 1))
     return 0
   fi
   if $DRY_RUN; then
-    echo "  - would set secret   $name (${#value} characters)"
+    echo "  - would set secret   $name (${#value} characters)${env:+ in environment $env}"
     return 0
   fi
-  printf '%s' "$value" | gh secret set "$name" --repo "$REPO"
+  printf '%s' "$value" | gh secret set "$name" --repo "$REPO" ${env:+--env "$env"}
+}
+
+# Create the environment, or tighten an existing one (a Vercel integration
+# leaves an unrestricted `Production` behind; names are case-insensitive), so
+# that only <branch> can run a job in it.
+ensure_environment() {
+  local branch=$1 policies
+  if $DRY_RUN; then
+    echo "  - would restrict environment $ENVIRONMENT to branch $branch"
+    return 0
+  fi
+  gh api -X PUT "repos/$REPO/environments/$ENVIRONMENT" --silent --input - <<< \
+    '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+  policies=$(gh api "repos/$REPO/environments/$ENVIRONMENT/deployment-branch-policies" \
+    --jq '.branch_policies[] | "\(.type // "branch") \(.name)"')
+  if ! grep -qxF "branch $branch" <<< "$policies"; then
+    gh api -X POST "repos/$REPO/environments/$ENVIRONMENT/deployment-branch-policies" \
+      -f name="$branch" -f type=branch --silent
+  fi
+  echo "  - environment $ENVIRONMENT: only branch $branch may use it"
+  grep -vxF "branch $branch" <<< "$policies" | grep . | sed 's/^/  ! environment also allows: /' >&2 || true
+}
+
+# A repository-level copy would still reach every branch, so it goes once the
+# environment holds the secret.
+delete_repo_secret() {
+  local name=$1
+  gh secret list --repo "$REPO" --json name --jq '.[].name' | grep -qxF "$name" || return 0
+  if $DRY_RUN; then
+    echo "  - would delete repository secret $name"
+    return 0
+  fi
+  gh secret delete "$name" --repo "$REPO"
 }
 
 # Variables are not secret, so they are printed: seeing the wrong URL or UUID
@@ -231,9 +276,14 @@ if [ -z "$app_uuid" ] && [ -t 0 ]; then
   echo
 fi
 
-set_secret   REGISTRY_USERNAME "$registry_username"
-set_secret   REGISTRY_PASSWORD "$registry_password"
-set_secret   COOLIFY_TOKEN     "$coolify_token"
+default_branch=$(gh api "repos/$REPO" --jq .default_branch)
+ensure_environment "$default_branch"
+set_secret   REGISTRY_USERNAME "$registry_username" "$ENVIRONMENT"
+set_secret   REGISTRY_PASSWORD "$registry_password" "$ENVIRONMENT"
+set_secret   COOLIFY_TOKEN     "$coolify_token"     "$ENVIRONMENT"
+[ -n "$registry_username" ] && delete_repo_secret REGISTRY_USERNAME
+[ -n "$registry_password" ] && delete_repo_secret REGISTRY_PASSWORD
+[ -n "$coolify_token" ]     && delete_repo_secret COOLIFY_TOKEN
 set_variable COOLIFY_URL       "$coolify_base"
 set_variable COOLIFY_APP_UUID  "$app_uuid"
 
@@ -283,6 +333,7 @@ $DRY_RUN && exit 0
 
 echo "Done."
 echo "  gh secret list   --repo $REPO"
+echo "  gh secret list   --repo $REPO --env $ENVIRONMENT"
 echo "  gh variable list --repo $REPO"
 
 # Left over from the starter workflow this pipeline replaces. Harmless, but it

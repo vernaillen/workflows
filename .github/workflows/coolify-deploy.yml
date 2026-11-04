@@ -21,6 +21,12 @@ name: coolify-deploy
 #         inputs are absent, so a repository can adopt this pipeline before its
 #         Coolify application exists.
 #
+# Secrets: REGISTRY_USERNAME, REGISTRY_PASSWORD and COOLIFY_TOKEN belong in the
+# caller's `production` environment, restricted to the default branch. A job
+# that declares an environment reads that environment's secrets, so a branch
+# that edits its own caller workflow still cannot reach them. BUILD_SECRETS,
+# SMOKE_ENV and PACKAGES_TOKEN stay repository secrets: every branch needs them.
+#
 # Every action is pinned to a commit SHA; Renovate keeps them current in this
 # repository alone, and the callers inherit that for free.
 
@@ -108,13 +114,15 @@ on:
         default: main
     secrets:
       REGISTRY_USERNAME:
-        description: htpasswd user of the registry service on Coolify.
+        description: htpasswd user of the registry service on Coolify. Set it in the caller's `production` environment.
         required: false
       REGISTRY_PASSWORD:
-        description: htpasswd password of the registry service on Coolify.
+        description: htpasswd password of the registry service on Coolify. Set it in the caller's `production` environment.
         required: false
       COOLIFY_TOKEN:
-        description: Coolify API token with deploy permission. Required only when the Coolify inputs are set.
+        description: >-
+          Coolify API token with deploy permission. Required only when the
+          Coolify inputs are set. Set it in the caller's `production` environment.
         required: false
       BUILD_SECRETS:
         description: >-
@@ -219,6 +227,11 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    # The registry credentials live in the caller's `production` environment,
+    # which only the default branch may use. Any other branch runs this job
+    # without an environment and never sees them, even if it rewrites its own
+    # copy of the caller workflow. Same condition as DEPLOY below.
+    environment: ${{ github.ref == format('refs/heads/{0}', inputs.deploy-branch) && 'production' || '' }}
     env:
       # One place decides whether this run is allowed to publish anything.
       DEPLOY: ${{ github.ref == format('refs/heads/{0}', inputs.deploy-branch) }}
@@ -348,6 +361,7 @@ jobs:
     if: needs.build.outputs.pushed == 'true' && inputs.coolify-url != '' && inputs.coolify-app-uuid != ''
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
+    environment: production
     permissions: {}
     steps:
       # Coolify pulls :latest but will not notice it moved -- force=true makes it

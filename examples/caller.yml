@@ -8,7 +8,10 @@
 #   * `packageManager` in package.json -- the only place the pnpm version is
 #     pinned; the workflow reads it rather than pinning its own.
 #   * a Dockerfile that serves on a known port.
-#   * secrets and variables set by scripts/configure-repo.sh.
+#   * secrets and variables set by scripts/configure-repo.sh. The registry and
+#     Coolify credentials go into a `production` environment that only the
+#     default branch may use, so a feature branch that edits this file still
+#     cannot read them.
 
 name: ci
 
