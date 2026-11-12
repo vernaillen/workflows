@@ -138,6 +138,7 @@ the three live callers: `harmonics.be`, `vernaillen.astro`,
 | `coolify-url` | string | `''` | Coolify instance URL, no trailing slash. Empty skips the deploy job. |
 | `coolify-app-uuid` | string | `''` | Coolify application UUID. Empty skips the deploy job. |
 | `deploy-branch` | string | `main` | Branch whose green builds are pushed and deployed. |
+| `deploy-timeout` | number | `600` | Seconds to wait for the Coolify deployment to finish before the run fails. |
 
 `coolify-url` deliberately has **no default**: this repository is public and
 the control-plane URL is not. `registry` keeps its default because that host is
@@ -152,7 +153,7 @@ credentials at all.
 |---|---|---|
 | `REGISTRY_USERNAME` | `production` environment | the push (`deploy-branch` runs only) |
 | `REGISTRY_PASSWORD` | `production` environment | the push |
-| `COOLIFY_TOKEN` | `production` environment | the deploy job; the job fails loudly if the Coolify inputs are set and this is empty |
+| `COOLIFY_TOKEN` | `production` environment | the deploy job; needs the `read` and `deploy` abilities (read for the deployment status). The job fails loudly if the Coolify inputs are set and this is empty |
 | `BUILD_SECRETS` | repository | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
 | `SMOKE_ENV` | repository | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
 | `PACKAGES_TOKEN` | repository | the check job's install, for private `@vernaillen/*` packages on GitHub Packages; the image build needs it as `github_packages_token` in `BUILD_SECRETS` |
@@ -213,9 +214,13 @@ the deploy are gated on `deploy-branch`.
 
 ### deploy
 
-A single authenticated `POST /api/v1/deploy?uuid=…&force=true`. `force=true`
-because Coolify will not otherwise notice that `:latest` moved. The job has
-`permissions: {}` — a curl needs no token — and is skipped entirely unless the
+An authenticated `POST /api/v1/deploy?uuid=…&force=true`. `force=true`
+because Coolify will not otherwise notice that `:latest` moved. That only
+queues the deployment, so the job then polls `GET /api/v1/deployments/<uuid>`
+every 10 seconds until Coolify reports `finished` (green) or `failed` or
+cancelled (red), or `deploy-timeout` runs out (red). A failed pull and a new
+container that never passes its healthcheck both end as `failed`. The job has
+`permissions: {}` — curl needs no GitHub token — and is skipped entirely unless the
 previous job actually pushed and both Coolify inputs are set, so a repository
 can adopt the pipeline before its Coolify application exists.
 
