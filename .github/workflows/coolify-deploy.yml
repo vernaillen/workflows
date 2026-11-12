@@ -26,8 +26,10 @@ name: coolify-deploy
 # Secrets: REGISTRY_USERNAME, REGISTRY_PASSWORD and COOLIFY_TOKEN belong in the
 # caller's `production` environment, restricted to the default branch. A job
 # that declares an environment reads that environment's secrets, so a branch
-# that edits its own caller workflow still cannot reach them. BUILD_SECRETS,
-# SMOKE_ENV and PACKAGES_TOKEN stay repository secrets: every branch needs them.
+# that edits its own caller workflow still cannot reach them. SMOKE_ENV, and
+# BUILD_SECRETS when other branches need it, stay repository secrets. Private
+# @vernaillen/* packages are installed with the run's own GITHUB_TOKEN, so no
+# package token has to be stored at all.
 #
 # Every action is pinned to a commit SHA; Renovate keeps them current in this
 # repository alone, and the callers inherit that for free.
@@ -140,9 +142,10 @@ on:
         required: false
       PACKAGES_TOKEN:
         description: >-
-          Classic PAT with read:packages, for installing private @vernaillen/*
-          packages from GitHub Packages. The Docker build needs it too, as
-          github_packages_token in BUILD_SECRETS.
+          Deprecated: classic PAT with read:packages. When empty, private
+          @vernaillen/* packages are installed with the run's GITHUB_TOKEN, which
+          needs read access to the caller under each package's "Manage Actions
+          access". Delete this secret once that access is granted.
         required: false
     outputs:
       image:
@@ -164,6 +167,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,15 +187,13 @@ jobs:
       # the one that was committed. If this fails, the lockfile needs committing.
       # The token goes in the runner's user-level ~/.npmrc: pnpm ignores
       # credentials in a repository's .npmrc, and on the runner it did not pick
-      # up an npm_config_ environment variable either. Skipped when the caller
+      # up an npm_config_ environment variable either. Harmless when the caller
       # has no private packages.
       - name: Install dependencies
         env:
-          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN || github.token }}
         run: |
-          if [ -n "${PACKAGES_TOKEN}" ]; then
-            echo "//npm.pkg.github.com/:_authToken=${PACKAGES_TOKEN}" >> ~/.npmrc
-          fi
+          echo "//npm.pkg.github.com/:_authToken=${PACKAGES_TOKEN}" >> ~/.npmrc
           pnpm install --frozen-lockfile
 
       - name: Cache Playwright browsers
@@ -233,6 +235,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+      packages: read
     # The registry credentials live in the caller's `production` environment,
     # which only the default branch may use. Any other branch runs this job
     # without an environment and never sees them, even if it rewrites its own
@@ -270,7 +273,11 @@ jobs:
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
           build-args: ${{ inputs.build-args }}
-          secrets: ${{ secrets.BUILD_SECRETS }}
+          # github_packages_token is provided here, so it does not belong in
+          # BUILD_SECRETS any more.
+          secrets: |
+            github_packages_token=${{ secrets.PACKAGES_TOKEN || github.token }}
+            ${{ secrets.BUILD_SECRETS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
