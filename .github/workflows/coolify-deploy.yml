@@ -17,9 +17,11 @@ name: coolify-deploy
 #         registry. Runs on every branch, so a broken Dockerfile is caught
 #         before it is merged; only the push is gated on `deploy-branch`.
 #
-# deploy  Asks Coolify to pull :latest and restart. Skipped when the Coolify
-#         inputs are absent, so a repository can adopt this pipeline before its
-#         Coolify application exists.
+# deploy  Asks Coolify to pull :latest and restart, then waits for that
+#         deployment to finish, so a failed pull or a container that never gets
+#         healthy fails the run. Skipped when the Coolify inputs are absent, so a
+#         repository can adopt this pipeline before its Coolify application
+#         exists.
 #
 # Secrets: REGISTRY_USERNAME, REGISTRY_PASSWORD and COOLIFY_TOKEN belong in the
 # caller's `production` environment, restricted to the default branch. A job
@@ -112,6 +114,10 @@ on:
         description: Branch whose green builds are pushed to the registry and deployed.
         type: string
         default: main
+      deploy-timeout:
+        description: Seconds to wait for the Coolify deployment to finish before failing the run.
+        type: number
+        default: 600
     secrets:
       REGISTRY_USERNAME:
         description: htpasswd user of the registry service on Coolify. Set it in the caller's `production` environment.
@@ -121,7 +127,7 @@ on:
         required: false
       COOLIFY_TOKEN:
         description: >-
-          Coolify API token with deploy permission. Required only when the
+          Coolify API token with read and deploy permission. Required only when the
           Coolify inputs are set. Set it in the caller's `production` environment.
         required: false
       BUILD_SECRETS:
@@ -360,13 +366,14 @@ jobs:
     needs: build
     if: needs.build.outputs.pushed == 'true' && inputs.coolify-url != '' && inputs.coolify-app-uuid != ''
     runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: 5
+    timeout-minutes: 20
     environment: production
     permissions: {}
     steps:
       # Coolify pulls :latest but will not notice it moved -- force=true makes it
       # re-pull and restart. The endpoint is POST-only; GET answers 405.
       - name: Ask Coolify to redeploy
+        id: trigger
         env:
           COOLIFY_URL: ${{ inputs.coolify-url }}
           COOLIFY_APP_UUID: ${{ inputs.coolify-app-uuid }}
@@ -376,7 +383,43 @@ jobs:
             echo "::error::coolify-url and coolify-app-uuid are set but COOLIFY_TOKEN is empty"
             exit 1
           fi
-          curl --fail-with-body -sS -X POST \
+          response=$(curl --fail-with-body -sS -X POST \
             "${COOLIFY_URL%/}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=true" \
-            -H "Authorization: Bearer ${COOLIFY_TOKEN}"
-          echo
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}")
+          echo "${response}"
+          deployment=$(jq -r '.deployments[0].deployment_uuid // empty' <<<"${response}")
+          if [ -z "${deployment}" ]; then
+            echo "::error::Coolify queued no deployment"
+            exit 1
+          fi
+          echo "deployment=${deployment}" >> "${GITHUB_OUTPUT}"
+
+      # The POST only queues the deployment. Coolify marks it failed when the
+      # pull fails or the new container never passes its healthcheck.
+      - name: Wait for the deployment to finish
+        env:
+          COOLIFY_URL: ${{ inputs.coolify-url }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          DEPLOYMENT: ${{ steps.trigger.outputs.deployment }}
+          DEPLOY_TIMEOUT: ${{ inputs.deploy-timeout }}
+        run: |
+          deadline=$((SECONDS + DEPLOY_TIMEOUT))
+          while :; do
+            status=$(curl --fail-with-body -sS --retry 3 --retry-all-errors \
+              "${COOLIFY_URL%/}/api/v1/deployments/${DEPLOYMENT}" \
+              -H "Authorization: Bearer ${COOLIFY_TOKEN}" | jq -r '.status')
+            case "${status}" in
+              finished)
+                echo "Deployment ${DEPLOYMENT} finished"
+                exit 0 ;;
+              failed|cancelled*)
+                echo "::error::Coolify deployment ${DEPLOYMENT} ${status}; its log is in Coolify"
+                exit 1 ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::Coolify deployment ${DEPLOYMENT} still ${status} after ${DEPLOY_TIMEOUT}s"
+              exit 1
+            fi
+            echo "status: ${status}"
+            sleep 10
+          done
