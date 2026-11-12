@@ -154,9 +154,9 @@ credentials at all.
 | `REGISTRY_USERNAME` | `production` environment | the push (`deploy-branch` runs only) |
 | `REGISTRY_PASSWORD` | `production` environment | the push |
 | `COOLIFY_TOKEN` | `production` environment | the deploy job; needs the `read` and `deploy` abilities (read for the deployment status). The job fails loudly if the Coolify inputs are set and this is empty |
-| `BUILD_SECRETS` | repository | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
+| `BUILD_SECRETS` | repository, or `production` when only `deploy-branch` builds need it | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
 | `SMOKE_ENV` | repository | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
-| `PACKAGES_TOKEN` | repository | the check job's install, for private `@vernaillen/*` packages on GitHub Packages; the image build needs it as `github_packages_token` in `BUILD_SECRETS` |
+| `PACKAGES_TOKEN` | deprecated, delete it | private `@vernaillen/*` packages are installed with the run's `GITHUB_TOKEN`, in the check job and as the `github_packages_token` build secret. Grant the caller read access under each package's *Package settings → Manage Actions access* first; until this secret is deleted it is used instead |
 
 **Why an environment.** A caller runs on every push to every branch, and a
 branch runs its own copy of the caller workflow. With the deploy credentials as
