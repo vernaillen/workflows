@@ -272,6 +272,21 @@ Callers pin `@v1`. Moving that tag is the release:
 ./scripts/release.sh v1        # after the self-test is green on main
 ```
 
+The `protect-tags` ruleset blocks every push to a `v*` tag, so the script does
+not push one. It starts [`release.yml`](.github/workflows/release.yml), which
+waits in the `production` environment until `vernaillen` approves it, checks the
+self-test again and moves the tag with a write deploy key, the ruleset's only
+bypass actor.
+
+One-time setup, in the browser as `vernaillen`:
+
+1. `ssh-keygen -t ed25519 -N '' -C workflows-release -f release_key`
+2. Settings → Deploy keys → Add: the contents of `release_key.pub`, *Allow write access*.
+3. Settings → Environments → `production`: branch rule `main`, required
+   reviewer `vernaillen`, secret `RELEASE_DEPLOY_KEY` with the contents of
+   `release_key`. Then delete both key files.
+4. Settings → Rules → `protect-tags` → Bypass list → add *Deploy keys*.
+
 Breaking changes get a new major (`v2`) and the callers move over one at a
 time; `v1` keeps working until the last one has moved. Pinning to a SHA also
 works and is the right choice if a caller ever needs to be frozen.
@@ -281,8 +296,9 @@ works and is the right choice if a caller ever needs to be frozen.
 ```
 .github/workflows/coolify-deploy.yml   the pipeline
 .github/workflows/self-test.yml        runs the pipeline against test/fixture
+.github/workflows/release.yml          moves the v1 tag once vernaillen approves
 test/fixture/                          two files: a Dockerfile and a /healthz server
 examples/caller.yml                    annotated caller template
 scripts/configure-repo.sh              sets secrets and variables on a caller repo
-scripts/release.sh                     moves the v1 tag
+scripts/release.sh                     starts the release workflow
 ```

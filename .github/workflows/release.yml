@@ -1,0 +1,71 @@
+name: release
+
+# Moves a major tag (v1) to the commit on main this run was started from, so
+# every caller pinned to it picks the change up on its next run.
+#
+# The protect-tags ruleset stops everyone without a bypass from moving v* tags,
+# the account that writes the code included. This job pushes with a write deploy
+# key, the one bypass actor on that ruleset. The key lives in the production
+# environment, which only main can use and which waits for vernaillen's
+# approval, so anyone may start a release but only vernaillen can let it run.
+#
+# Start it with scripts/release.sh, or Actions -> release -> Run workflow on main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Major tag to move, e.g. v1
+        type: string
+        default: v1
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    permissions:
+      actions: read
+    steps:
+      # The self-test runs the entire pipeline against test/fixture, so a green
+      # run on this commit is the only evidence that matters.
+      - name: Check the tag and the self-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          if ! [[ "${TAG}" =~ ^v[0-9]+$ ]]; then
+            echo "::error::'${TAG}' is not a major tag like v1"
+            exit 1
+          fi
+          conclusion=$(gh run list -R "${GITHUB_REPOSITORY}" --workflow self-test.yml \
+            --commit "${SHA}" --limit 1 --json conclusion --jq '.[0].conclusion // "none"')
+          if [ "${conclusion}" != success ]; then
+            echo "::error::self-test on ${SHA::7} is '${conclusion}', not success"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      # -f on both: a moving major tag is the entire mechanism. A caller that
+      # needs to be frozen pins the SHA instead, which this never touches.
+      - name: Move the tag
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -f -a "${TAG}" -m "${TAG} -> ${SHA::7}" "${SHA}"
+          git push -f origin "refs/tags/${TAG}"
+          echo "${TAG} now points at ${SHA::7}"
