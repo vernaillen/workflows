@@ -23,11 +23,12 @@ name: coolify-deploy
 #         repository can adopt this pipeline before its Coolify application
 #         exists.
 #
-# Secrets: REGISTRY_USERNAME, REGISTRY_PASSWORD and COOLIFY_TOKEN belong in the
-# caller's `production` environment, restricted to the default branch. A job
-# that declares an environment reads that environment's secrets, so a branch
-# that edits its own caller workflow still cannot reach them. SMOKE_ENV, and
-# BUILD_SECRETS when other branches need it, stay repository secrets. Private
+# Secrets: REGISTRY_USERNAME, REGISTRY_PASSWORD, COOLIFY_TOKEN and BUILD_SECRETS
+# belong in the caller's `production` environment, restricted to the default
+# branch. A job that declares an environment reads that environment's secrets,
+# so a branch that edits its own caller workflow still cannot reach them; branch
+# builds run without BUILD_SECRETS. SMOKE_ENV, and BUILD_SECRETS when branch
+# builds fail without it, stay repository secrets. Private
 # @vernaillen/* packages are installed with the run's own GITHUB_TOKEN, so no
 # package token has to be stored at all.
 #

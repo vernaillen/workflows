@@ -154,7 +154,7 @@ credentials at all.
 | `REGISTRY_USERNAME` | `production` environment | the push (`deploy-branch` runs only) |
 | `REGISTRY_PASSWORD` | `production` environment | the push |
 | `COOLIFY_TOKEN` | `production` environment | the deploy job; needs the `read` and `deploy` abilities (read for the deployment status). The job fails loudly if the Coolify inputs are set and this is empty |
-| `BUILD_SECRETS` | repository, or `production` when only `deploy-branch` builds need it | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
+| `BUILD_SECRETS` | `production` environment, so branch builds run without it; repository only when branch builds fail without it (`configure-repo.sh --branch-build-secrets`) | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
 | `SMOKE_ENV` | repository | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
 | `PACKAGES_TOKEN` | deprecated, delete it | private `@vernaillen/*` packages are installed with the run's `GITHUB_TOKEN`, in the check job and as the `github_packages_token` build secret. Grant the caller read access under each package's *Package settings → Manage Actions access* first; until this secret is deleted it is used instead |
 
@@ -239,8 +239,8 @@ appears in the process list, the shell history or the output. It is idempotent
 
 It also creates the `production` environment (or tightens an existing one, such
 as the unrestricted `Production` a Vercel integration leaves behind), limits it
-to the default branch, stores the registry and Coolify credentials there and
-deletes their repository-level copies. All of that needs admin rights on the
+to the default branch, stores the registry and Coolify credentials and
+`BUILD_SECRETS` there and deletes their repository-level copies. All of that needs admin rights on the
 repository; when the `gh` login has none, pass a short-lived admin token:
 
 ```bash
