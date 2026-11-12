@@ -3,11 +3,13 @@
 # Set the GitHub Actions secrets and variables that coolify-deploy.yml needs on
 # a repository that calls it.
 #
-# The registry and Coolify credentials go into a `production` environment that
-# only the default branch may use, and their repository-level copies are
-# deleted. A repository secret reaches every branch, and a branch runs its own
-# copy of the caller workflow, so anyone who can push a branch could otherwise
-# read them. The rest (BUILD_SECRETS, SMOKE_ENV, extras) stay repository secrets.
+# The registry and Coolify credentials, and BUILD_SECRETS, go into a
+# `production` environment that only the default branch may use, and their
+# repository-level copies are deleted. A repository secret reaches every branch,
+# and a branch runs its own copy of the caller workflow, so anyone who can push
+# a branch could otherwise read them. Branch builds then run without
+# BUILD_SECRETS; pass --branch-build-secrets when they cannot. The rest
+# (SMOKE_ENV, extras) stay repository secrets.
 #
 # Managing secrets and environments needs admin rights on the repository. When
 # the gh login has none, run it with a short-lived admin token:
@@ -35,7 +37,11 @@
 #   --var NAME[:KEY]       Also set variable NAME, read from KEY (default: NAME).
 #   --build-secret ID:KEY  Add `ID=<value of KEY>` to the BUILD_SECRETS secret,
 #                          which the pipeline mounts with --mount=type=secret.
-#                          Repeatable; one line per id.
+#                          Repeatable; one line per id. Set in the `production`
+#                          environment, so only default-branch builds get it.
+#   --branch-build-secrets Make BUILD_SECRETS a repository secret instead, for
+#                          an app whose branch builds fail without it. Every
+#                          branch can read it then.
 #   --smoke-env KEY        Add `KEY=<value>` to the SMOKE_ENV secret, which is
 #                          handed to the smoke-test container as an env file.
 #                          Repeatable. For variables the app needs merely to
@@ -59,6 +65,7 @@ PROJECT_ENV=${PROJECT_ENV:-$PWD/.env}
 REPO=${REPO:-}
 MATCH=
 DRY_RUN=false
+BRANCH_BUILD_SECRETS=false
 EXTRA_SECRETS=
 EXTRA_VARS=
 BUILD_SECRET_SPECS=
@@ -74,6 +81,7 @@ while [ $# -gt 0 ]; do
     --var)          EXTRA_VARS="${EXTRA_VARS}${2:?--var needs NAME[:KEY]}"$'\n'; shift 2 ;;
     --build-secret) BUILD_SECRET_SPECS="${BUILD_SECRET_SPECS}${2:?--build-secret needs ID:KEY}"$'\n'; shift 2 ;;
     --smoke-env)    SMOKE_ENV_KEYS="${SMOKE_ENV_KEYS}${2:?--smoke-env needs KEY}"$'\n'; shift 2 ;;
+    --branch-build-secrets) BRANCH_BUILD_SECRETS=true; shift ;;
     --dry-run)      DRY_RUN=true; shift ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; echo >&2; usage >&2; exit 2 ;;
@@ -302,7 +310,14 @@ while IFS= read -r spec; do
     failed=$((failed + 1))
   fi
 done <<< "$BUILD_SECRET_SPECS"
-[ -n "$build_secrets" ] && set_secret BUILD_SECRETS "$build_secrets"
+if [ -n "$build_secrets" ]; then
+  if $BRANCH_BUILD_SECRETS; then
+    set_secret BUILD_SECRETS "$build_secrets"
+  else
+    set_secret BUILD_SECRETS "$build_secrets" "$ENVIRONMENT"
+    delete_repo_secret BUILD_SECRETS
+  fi
+fi
 
 smoke_env=
 while IFS= read -r key; do
