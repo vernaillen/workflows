@@ -156,7 +156,7 @@ credentials at all.
 | `COOLIFY_TOKEN` | `production` environment | the deploy job; needs the `read` and `deploy` abilities (read for the deployment status). The job fails loudly if the Coolify inputs are set and this is empty |
 | `BUILD_SECRETS` | `production` environment, so branch builds run without it; repository only when branch builds fail without it (`configure-repo.sh --branch-build-secrets`) | newline-separated `id=value`, mounted as `--mount=type=secret,id=<id>`, never stored in a layer |
 | `SMOKE_ENV` | repository | newline-separated `KEY=VALUE` handed to the smoke-test container as an env file |
-| `PACKAGES_TOKEN` | deprecated, delete it | private `@vernaillen/*` packages are installed with the run's `GITHUB_TOKEN`, in the check job and as the `github_packages_token` build secret. Grant the caller read access under each package's *Package settings → Manage Actions access* first; until this secret is deleted it is used instead |
+| `PACKAGES_TOKEN` | no longer read, delete it | `@vernaillen/*` packages come from npmjs.com, so the pipeline needs no package token and no `github_packages_token` build secret |
 
 **Why an environment.** A caller runs on every push to every branch, and a
 branch runs its own copy of the caller workflow. With the deploy credentials as
