@@ -30,9 +30,11 @@
 # Options:
 #   --repo OWNER/NAME      Target repository. Defaults to the `origin` remote of
 #                          the current directory.
-#   --match SUBSTRING      Matched against Coolify application names and FQDNs to
+#   --match WORDS          Whole words that must all appear in a Coolify application's
+#                          name or FQDN (case-insensitive, split on punctuation) to
 #                          find the application UUID. Defaults to the repository
-#                          name with any dots removed.
+#                          name split on dots and hyphens: `vernaillen.astro` matches
+#                          `vernaillen.dev (astro version)`.
 #   --secret NAME[:KEY]    Also set secret NAME, read from KEY (default: NAME).
 #   --var NAME[:KEY]       Also set variable NAME, read from KEY (default: NAME).
 #   --build-secret ID:KEY  Add `ID=<value of KEY>` to the BUILD_SECRETS secret,
@@ -92,10 +94,7 @@ if [ -z "$REPO" ]; then
   REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
   [ -n "$REPO" ] || { echo "no --repo given and no GitHub remote here" >&2; exit 2; }
 fi
-# Both sides of the comparison are lowercased and stripped of punctuation, so
-# `harmonics.be` matches an application named `harmonics-be`.
-normalise() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9'; }
-MATCH=$(normalise "${MATCH:-${REPO#*/}}")
+MATCH=${MATCH:-${REPO#*/}}
 
 # --- reading -----------------------------------------------------------------
 
@@ -156,8 +155,11 @@ discover_app_uuid() {
   json=$(curl -fsS --max-time 15 "$base/api/v1/applications" \
     -H "Authorization: Bearer $token") || return 1
   matches=$(printf '%s' "$json" | jq -r --arg m "$MATCH" '
-    (if type == "array" then . else (.data // []) end)
-    | map(select((((.name // "") + " " + (.fqdn // "")) | ascii_downcase | gsub("[^a-z0-9]"; "")) | contains($m)))
+    def words: ascii_downcase | [split("[^a-z0-9]+"; null)[] | select(length > 0)];
+    ($m | words) as $tokens
+    | (if type == "array" then . else (.data // []) end)
+    | map(select(. as $app | ((($app.name // "") + " " + ($app.fqdn // "")) | words) as $w
+        | all($tokens[]; . as $t | $w | any(. == $t))))
     | .[] | "\(.uuid)\t\(.name // "?")\t\(.fqdn // "-")"') || return 1
   [ -n "$matches" ] || return 1
   count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
